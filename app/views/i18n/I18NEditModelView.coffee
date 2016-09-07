@@ -1,6 +1,8 @@
 RootView = require 'views/core/RootView'
 locale = require 'locale/locale'
 Patch = require 'models/Patch'
+Patches = require 'collections/Patches'
+PatchModal = require 'views/editor/PatchModal'
 template = require 'templates/i18n/i18n-edit-model-view'
 deltasLib = require 'core/deltas'
 
@@ -15,13 +17,19 @@ module.exports = class I18NEditModelView extends RootView
     'change .translation-input': 'onInputChanged'
     'change #language-select': 'onLanguageSelectChanged'
     'click #patch-submit': 'onSubmitPatch'
+    'click .open-patch-link': 'onClickOpenPatchLink'
 
   constructor: (options, @modelHandle) ->
     super(options)
+
     @model = new @modelClass(_id: @modelHandle)
-    @model = @supermodel.loadModel(@model).model
-    @model.saveBackups = true
+    @supermodel.trackRequest(@model.fetch())
+    @patches = new Patches()
+    @patches.comparator = '_id'
+    @supermodel.trackRequest(@patches.fetchMineFor(@model))
+
     @selectedLanguage = me.get('preferredLanguage', true)
+    @madeChanges = false
 
   showLoading: ($el) ->
     $el ?= @$el.find('.outer-content')
@@ -29,7 +37,7 @@ module.exports = class I18NEditModelView extends RootView
 
   onLoaded: ->
     super()
-    @model.markToRevert() unless @model.hasLocalChanges()
+    @originalModel = @model.clone()
 
   getRenderData: ->
     c = super()
@@ -128,54 +136,54 @@ module.exports = class I18NEditModelView extends RootView
     #- Enable patch submit button
 
     @$el.find('#patch-submit').attr('disabled', null)
+    @madeChanges = true
 
   onLanguageSelectChanged: (e) ->
+    if @madeChanges
+      return unless confirm('You have unsaved changes!')
     return if @hush
     @selectedLanguage = $(e.target).val()
     if @selectedLanguage
       me.set('preferredLanguage', @selectedLanguage)
       me.patch()
+    @madeChanges = false
+    @model.set(@originalModel.clone().attributes)
     @render()
 
+  onClickOpenPatchLink: (e) ->
+    patchID = $(e.currentTarget).data('patch-id')
+    patch = @patches.get(patchID)
+    modal = new PatchModal(patch, @model)
+    @openModalView(modal)
+
+  onLeaveMessage: ->
+    if @madeChanges
+      return 'You have unsaved changes!'
+
   onSubmitPatch: (e) ->
-
-    delta = @model.getDelta()
+    delta = @originalModel.getDeltaWith(@model)
     flattened = deltasLib.flattenDelta(delta)
-    save = _.all(flattened, (delta) ->
-      return _.isArray(delta.o) and delta.o.length is 1 and 'i18n' in delta.dataPath
-    )
-
-    commitMessage = "Diplomat submission for lang #{@selectedLanguage}: #{flattened.length} change(s)."
-    save = false if @savedBefore
-
-    if save
-      modelToSave = @model.cloneNewMinorVersion()
-      modelToSave.updateI18NCoverage() if modelToSave.get('i18nCoverage')
-      if @modelClass.schema.properties.commitMessage
-        modelToSave.set 'commitMessage', commitMessage
-
-    else
-      modelToSave = new Patch()
-      modelToSave.set 'delta', @model.getDelta()
-      modelToSave.set 'target', {
-        'collection': _.string.underscored @model.constructor.className
-        'id': @model.id
-      }
-      modelToSave.set 'commitMessage', commitMessage
-
-    errors = modelToSave.validate()
+    collection = _.string.underscored @model.constructor.className
+    patch = new Patch({
+      delta
+      target: { collection, 'id': @model.id }
+      commitMessage: "Diplomat submission for lang #{@selectedLanguage}: #{flattened.length} change(s)."
+    })
+    errors = patch.validate()
     button = $(e.target)
     button.attr('disabled', 'disabled')
     return button.text('Failed to Submit Changes') if errors
-    type = 'PUT'
-    if @modelClass.schema.properties.version or (not save)
-      # Override PUT so we can trigger postNewVersion logic
-      # or you're POSTing a Patch
-      type = 'POST'
-    res = modelToSave.save(null, {type: type})
+    res = patch.save(null, { url: "/db/#{collection}/#{@model.id}/patch" })
     return button.text('Failed to Submit Changes') unless res
     button.text('Submitting...')
-    res.error => button.text('Error Submitting Changes')
-    res.success =>
+    Promise.resolve(res)
+    .then =>
       @savedBefore = true
+      @madeChanges = false
+      @patches.add(patch)
+      @renderSelectors('#patches-col')
       button.text('Submit Changes')
+    .catch =>
+      button.text('Error Submitting Changes')
+      @$el.find('#patch-submit').attr('disabled', null)
+        

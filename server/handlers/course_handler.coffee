@@ -1,6 +1,6 @@
 
 mongoose = require 'mongoose'
-Handler = require '../commons//Handler'
+Handler = require '../commons/Handler'
 Course = require '../models/Course'
 
 # TODO: Refactor PatchHandler.setStatus into its own route.

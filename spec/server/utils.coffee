@@ -2,6 +2,7 @@ async = require 'async'
 utils = require '../../server/lib/utils'
 co = require 'co'
 Promise = require 'bluebird'
+Article = require '../../server/models/Article'
 User = require '../../server/models/User'
 Level = require '../../server/models/Level'
 LevelSession = require '../../server/models/LevelSession'
@@ -131,6 +132,19 @@ module.exports = mw =
       
     session = new LevelSession(data)
     session.save(done)
+    
+  makeArticle: Promise.promisify (data, sources, done) ->
+    args = Array.from(arguments)
+    [done, [data, sources]] = [args.pop(), args]
+
+    data = _.extend({}, {
+      name: _.uniqueId('Article ')
+    }, data)
+    
+    request.post { uri: getURL('/db/article'), json: data }, (err, res) ->
+      return done(err) if err
+      expect(res.statusCode).toBe(201)
+      Article.findById(res.body._id).exec done
 
   makeAchievement: Promise.promisify (data, sources, done) ->
     args = Array.from(arguments)
